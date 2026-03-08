@@ -36,14 +36,11 @@ const auth  = getAuth(fbApp);
    ⚙  URL — dev da localhost, prod da o'zi topadi
 ───────────────────────────────────────────────────────── */
 const BASE = (location.hostname === "localhost" || location.hostname === "127.0.0.1")
-  ? "http://localhost:8080"
+  ? "http://94230.232.245:8080"
   : location.origin;
 const API        = BASE + "/api";
 const SOCKET_URL = BASE;
 
-/* ── Secret codes ── */
-const ADMIN_CODE  = "/789456123159";
-const DRIVER_CODE = "/shofer15948";
 
 /* ═══════════════════════════════════════
    API HELPER
@@ -1457,3 +1454,4 @@ function start() {
 
 
 document.addEventListener("DOMContentLoaded", start);
+
