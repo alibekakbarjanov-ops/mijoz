@@ -1,16 +1,15 @@
 /* ==========================================================
-   SOF SHOP — app.js
-   ✅ Auth         — Firebase Email/Password (o'zgarishsiz)
-   ✅ Ma'lumotlar  — PostgreSQL backend  http://localhost:4000/api
-                     (Firebase Realtime DB o'rniga)
-   ✅ Profile, Regions, Catalog
-   ✅ Products, Favorites, Cart
-   ✅ Receipt + Orders
-   ✅ Ads slider
-   ✅ Admin / Driver (secret code orqali)
+   SOF SHOP — app.js  (TO'LIQ)
+   ✅ Auth         — Firebase Email/Password
+   ✅ Ma'lumotlar  — PostgreSQL backend  /api
+   ✅ Stock        — zaxira tekshiruvi, soldout badge
+   ✅ Reviews      — mahsulot sharhlari (gorizontal kartalar)
+   ✅ Installment  — nasiya tugmalari (3/6/12 oy)
+   ✅ Realtime     — Socket.io
+   ✅ GPS          — avto joylashuv
 ========================================================== */
 
-/* ── Firebase Auth (faqat login uchun) ── */
+/* ── Firebase Auth ── */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
 import {
   getAuth, onAuthStateChanged,
@@ -32,15 +31,16 @@ const firebaseConfig = {
 const fbApp = initializeApp(firebaseConfig);
 const auth  = getAuth(fbApp);
 
-/* ─────────────────────────────────────────────────────────
-   ⚙  URL — dev da localhost, prod da o'zi topadi
-───────────────────────────────────────────────────────── */
+/* ─── URL ─── */
 const BASE = (location.hostname === "localhost" || location.hostname === "127.0.0.1")
-  ? "http://https://heath-finances-latter-opera.trycloudflare.com"
+  ? " https://steam-bass-which-bio.trycloudflare.com"
   : location.origin;
 const API        = BASE + "/api";
 const SOCKET_URL = BASE;
 
+/* ── Secret codes ── */
+const ADMIN_CODE  = "/789456123159";
+const DRIVER_CODE = "/shofer15948";
 
 /* ═══════════════════════════════════════
    API HELPER
@@ -116,14 +116,16 @@ function esc(s) {
     .replaceAll("&","&amp;").replaceAll("<","&lt;")
     .replaceAll(">","&gt;").replaceAll('"',"&quot;");
 }
-function toast(msg, ms = 2800) {
+
+function toast(msg, duration = 2200) {
   const t = $("toast");
   if (!t) return;
   t.style.whiteSpace = "pre-line";
   t.textContent = msg; show(t);
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => hide(t), ms);
+  toast._t = setTimeout(() => hide(t), duration);
 }
+
 function setMsg(el, msg) {
   if (!el) return;
   el.textContent = msg; show(el);
@@ -143,18 +145,19 @@ const state = {
   catalogLevel: "root", cat: null, sub: null,
   adminTab: "add", orderMode: "active", openProductId: null,
   userOrders: [], allOrders: [],
-  socket: null,  // Socket.io ulanish
+  socket: null,
 };
 
 /* ═══════════════════════════════════════
-   POLLING — 8-15 soniyada yangilash
+   POLLING
 ═══════════════════════════════════════ */
 const polls = {};
-function startPoll(key, fn, ms = 10000) {
+function startPoll(key, fn, ms = 20000) {
   stopPoll(key);
-  const safe = () => Promise.resolve().then(fn).catch(e => console.warn("poll[" + key + "]:", e?.message));
-  safe();
-  polls[key] = setInterval(safe, ms);
+  try { fn(); } catch(e) { console.error("Poll start error:", key, e); }
+  polls[key] = setInterval(() => {
+    try { fn(); } catch(e) { console.error("Poll error:", key, e); }
+  }, ms);
 }
 function stopPoll(key)  { if (polls[key]) { clearInterval(polls[key]); delete polls[key]; } }
 function stopAllPolls() { Object.keys(polls).forEach(stopPoll); }
@@ -163,10 +166,8 @@ function stopAllPolls() { Object.keys(polls).forEach(stopPoll); }
    SOCKET.IO — REALTIME
 ═══════════════════════════════════════ */
 function initSocket(user) {
-  // Eski socket bo'lsa yop
   if (state.socket) { state.socket.disconnect(); state.socket = null; }
 
-  // Socket.io CDN dan dinamik import
   const script = document.createElement("script");
   script.src = "https://cdn.socket.io/4.7.5/socket.io.min.js";
   script.onload = () => {
@@ -181,59 +182,50 @@ function initSocket(user) {
 
     socket.on("connect", () => {
       console.log("🔌 Socket ulandi:", socket.id);
-      // Foydalanuvchi xonasiga qo'shilish
       socket.emit("join", { role: "customer", uid: user.uid });
       updateSocketIndicator(true);
     });
-
-    socket.on("disconnect", () => {
-      console.log("🔌 Socket uzildi");
-      updateSocketIndicator(false);
-    });
-
-    socket.on("connect_error", () => {
-      updateSocketIndicator(false);
-    });
+    socket.on("disconnect",    () => updateSocketIndicator(false));
+    socket.on("connect_error", () => updateSocketIndicator(false));
 
     /* ── Buyurtma hodisalari ── */
-
-    // Mening buyurtmam yo'lga chiqdi
     socket.on("my_order_updated", data => {
       const idx = state.userOrders.findIndex(o => o.orderId === data.orderId);
       if (idx !== -1) {
-        if (data.status === "on_way")    state.userOrders[idx].status.onWay      = true;
-        if (data.status === "delivered") state.userOrders[idx].status.delivered  = true;
+        if (data.status === "on_way")    state.userOrders[idx].status.onWay     = true;
+        if (data.status === "delivered") state.userOrders[idx].status.delivered = true;
       }
       renderOrders();
-      // Bildirishnoma chiqarish
       if (data.status === "on_way")    { toast("🚗 Buyurtmangiz yo'lga chiqdi!"); vibrate(); }
       if (data.status === "delivered") { toast("✅ Buyurtmangiz yetib keldi!"); vibrate(); }
     });
 
-    // Yangi buyurtma tasdiqlandi (o'zimizniki)
     socket.on("order_created", data => {
       state.userOrders.unshift(data);
       renderOrders();
     });
 
-    // Mahsulot tugadi — real vaqtda kartani kulrang qilish
-    socket.on("product_out_of_stock", ({ productId }) => {
-      const p = state.productsMap[productId];
+    /* ── Stock hodisalari ── */
+    socket.on("product_out_of_stock", data => {
+      const p = state.productsMap[data.productId];
       if (p) {
         p.stock = 0;
-        renderHome(); renderCatalog();
-        if (state.view === "product" && state.openProductId === productId) renderProduct(productId);
+        const idx = state.products.findIndex(x => x.id === data.productId);
+        if (idx !== -1) state.products[idx].stock = 0;
       }
+      renderHome();
+      if (state.view === "product" && state.openProductId === data.productId) renderProduct(data.productId);
     });
 
-    // Mahsulot restok qilindi
-    socket.on("product_restocked", ({ productId, stock }) => {
-      const p = state.productsMap[productId];
+    socket.on("product_restocked", data => {
+      const p = state.productsMap[data.productId];
       if (p) {
-        p.stock = stock;
-        renderHome(); renderCatalog();
-        if (state.view === "product" && state.openProductId === productId) renderProduct(productId);
+        p.stock = data.stock;
+        const idx = state.products.findIndex(x => x.id === data.productId);
+        if (idx !== -1) state.products[idx].stock = data.stock;
       }
+      renderHome();
+      if (state.view === "product" && state.openProductId === data.productId) renderProduct(data.productId);
     });
   };
   document.head.appendChild(script);
@@ -254,6 +246,12 @@ function updateSocketIndicator(connected) {
 
 function vibrate() {
   if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+}
+
+function requestNotifPermission() {
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
+  }
 }
 
 /* ═══════════════════════════════════════
@@ -290,8 +288,6 @@ function initRegionsUI() {
 /* ═══════════════════════════════════════
    AUTH UI
 ═══════════════════════════════════════ */
-
-// Registratsiya jarayonida onAuthStateChanged ni bir marta o'tkazib yuborish uchun flag
 let _justRegistered = false;
 
 function initAuthUI() {
@@ -304,7 +300,6 @@ function initAuthUI() {
     hide($("loginForm")); show($("regForm")); hide($("authMsg"));
   });
 
-  /* ── LOGIN ── */
   $("loginForm")?.addEventListener("submit", async e => {
     e.preventDefault(); hide($("authMsg"));
     const btn = $("loginForm").querySelector("button[type=submit]");
@@ -318,10 +313,8 @@ function initAuthUI() {
     }
   });
 
-  /* ── REGISTER ── */
   $("regForm")?.addEventListener("submit", async e => {
     e.preventDefault(); hide($("authMsg"));
-
     const firstName = $("regFirst")?.value.trim()  || "";
     const lastName  = $("regLast")?.value.trim()   || "";
     const phone     = $("regPhone")?.value.trim()  || "";
@@ -342,33 +335,23 @@ function initAuthUI() {
     _justRegistered = true;
     try {
       const regData = { email, firstName, lastName, phone, lang, region, district };
-
-      // Firebase da yaratish
       const cred = await createUserWithEmailAndPassword(auth, email, pass);
-
-      // Backendga saqlash
       await syncUser(cred.user, regData);
-
-      // Muvaffaqiyat — onAuthStateChanged endi ishga tushadi
       _justRegistered = false;
       toast("Ro'yxatdan o'tildi ✅");
-
-      // Qo'lda ilovaga o'tkazamiz (onAuthStateChanged kutmasdan)
       hide($("auth")); show($("app"));
       state.user = cred.user;
       await Promise.all([fetchProducts(), fetchFavorites(), fetchCart(), fetchAds()]);
       await fetchUserOrders();
-      startPoll("products",   fetchProducts,   20000);
-      startPoll("favorites",  fetchFavorites,  20000);
+      startPoll("products",   fetchProducts,   30000);
+      startPoll("favorites",  fetchFavorites,  30000);
       startPoll("cart",       fetchCart,       20000);
-      startPoll("ads",        fetchAds,        20000);
+      startPoll("ads",        fetchAds,        60000);
       startPoll("userOrders", fetchUserOrders, 20000);
-      // ✅ Socket + GPS + Notif
-      connectSocket();
+      initSocket(cred.user);
       startAutoGPS();
       requestNotifPermission();
       go("home");
-
     } catch (err) {
       _justRegistered = false;
       resetBtn();
@@ -387,34 +370,22 @@ function genCustomerId() {
 }
 
 async function syncUser(user, regData = null) {
-  // 1. Avval backenddan mavjud profilni olishga harakat qilamiz
   try {
     const existing = await apiGet("/users/" + user.uid);
-    if (existing && existing.uid) {
-      state.profile = existing;
-      return existing;
-    }
-  } catch { /* topilmadi — yangi foydalanuvchi */ }
-
-  // 2. Profil topilmadi — bu yangi foydalanuvchi
-  //    Agar regData berilmagan bo'lsa — xato
-  if (!regData) {
-    throw new Error("Profil topilmadi. Iltimos qaytadan ro'yxatdan o'ting.");
-  }
-
-  // 3. Yangi profil yaratish
+    if (existing && existing.uid) { state.profile = existing; return existing; }
+  } catch { /* topilmadi */ }
+  if (!regData) throw new Error("Profil topilmadi. Iltimos qaytadan ro'yxatdan o'ting.");
   const profile = {
     uid:        user.uid,
     customerId: genCustomerId(),
-    email:      regData.email      || user.email || "",
-    firstName:  regData.firstName  || "",
-    lastName:   regData.lastName   || "",
-    phone:      regData.phone      || "",
-    lang:       regData.lang       || "uz",
-    region:     regData.region     || "",
-    district:   regData.district   || "",
+    email:      regData.email     || user.email || "",
+    firstName:  regData.firstName || "",
+    lastName:   regData.lastName  || "",
+    phone:      regData.phone     || "",
+    lang:       regData.lang      || "uz",
+    region:     regData.region    || "",
+    district:   regData.district  || "",
   };
-
   await apiPost("/users/sync", profile);
   state.profile = profile;
   return profile;
@@ -423,21 +394,28 @@ async function syncUser(user, regData = null) {
 function renderProfile() {
   if (state.view !== "profile") return;
   const p = state.profile;
-  if (!p) { if($("profileBox")) $("profileBox").textContent = "Profil topilmadi"; return; }
-  if (!$("profileBox")) return;
+  if (!p) { $("profileBox").textContent = "Profil topilmadi"; return; }
+
+  const initials = ((p.firstName||"")[0]||"") + ((p.lastName||"")[0]||"");
+  const COLORS   = ["#6c63ff","#2dd4bf","#f97316","#ec4899","#22c55e","#3b82f6"];
+  const color    = COLORS[(p.customerId||"0").charCodeAt(0) % COLORS.length];
+
   $("profileBox").innerHTML = `
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-      <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#e11d2e,#f97316);color:#fff;font-size:22px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${(p.firstName?.[0]||"U").toUpperCase()}</div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+      <div style="width:56px;height:56px;border-radius:50%;background:${color};
+                  display:flex;align-items:center;justify-content:center;
+                  color:#fff;font-size:22px;font-weight:700;flex:0 0 56px">
+        ${esc(initials.toUpperCase()||"?")}
+      </div>
       <div>
         <div style="font-weight:700;font-size:17px">${esc(p.firstName||"")} ${esc(p.lastName||"")}</div>
-        <div class="muted" style="font-size:12px">ID: <b>${esc(p.customerId||"—")}</b></div>
+        <div class="muted">ID: <b>${esc(p.customerId||"—")}</b></div>
       </div>
     </div>
-    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span class="muted">📞 Telefon</span><span>${esc(p.phone||"—")}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span class="muted">✉️ Email</span><span style="word-break:break-all">${esc(p.email||"—")}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span class="muted">📍 Viloyat</span><span>${esc(p.region||"—")}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(0,0,0,.06)"><span class="muted">🏘 Tuman</span><span>${esc(p.district||"—")}</span></div>
-    <div style="display:flex;justify-content:space-between;padding:8px 0"><span class="muted">🌐 Til</span><span>${esc(p.lang||"uz")}</span></div>`;
+    <div class="muted">Tel: ${esc(p.phone||"—")}</div>
+    <div class="muted">Lokatsiya: ${esc((p.region||"")+", "+(p.district||""))}</div>
+    <div class="muted">Gmail: ${esc(p.email||"—")}</div>
+    <div class="muted">Til: ${esc(p.lang||"uz")}</div>`;
 }
 
 /* ═══════════════════════════════════════
@@ -467,8 +445,7 @@ async function fetchProducts() {
     arr.sort((a, b) => safeNum(b.createdAt) - safeNum(a.createdAt));
     state.products    = arr;
     state.productsMap = Object.fromEntries(arr.map(p => [p.id, p]));
-    renderHome(); renderCatalog(); renderAds(); renderFav();
-    if (state.view === "cart")    renderCart();
+    renderHome(); renderCatalog(); renderAds();
     if (state.view === "product" && state.openProductId) renderProduct(state.openProductId);
     if (state.view === "admin"   && state.adminTab === "list") renderAdminList();
     if (state.view === "admin"   && state.adminTab === "ads")  renderAdsPicker();
@@ -484,25 +461,25 @@ function matchesHome(p) {
 }
 
 function productCard(p) {
-  const img  = p.images?.[0] || "";
-  const fav  = !!state.favorites?.[p.id];
-  const disc = safeNum(p.discountPercent);
-  const badge = disc > 0 ? `${disc}%` : (isNew(p) ? "NEW" : (p.code || ""));
-  const oos  = safeNum(p.stock) <= 0;
+  const img    = p.images?.[0] || "";
+  const fav    = !!state.favorites?.[p.id];
+  const disc   = safeNum(p.discountPercent);
+  const stock  = safeNum(p.stock);
+  const badge  = disc > 0 ? `${disc}%` : (isNew(p) ? "NEW" : (p.code || ""));
+  const soldout = stock === 0 ? "soldout" : "";
   return `
-    <div class="cardP${oos?" soldout":""}" data-open="${esc(p.id)}">
-      ${oos
-        ? `<div class="outOfStockBanner">Tugagan</div>`
-        : `<button class="cartBtn" data-cart="${esc(p.id)}" type="button">🛒</button>`}
+    <div class="cardP ${soldout}" data-open="${esc(p.id)}">
+      ${stock === 0 ? `<div class="outOfStockBanner">Tugagan</div>` : ""}
+      <button class="cartBtn" data-cart="${esc(p.id)}" type="button">🛒</button>
       <button class="favBtn ${fav?"active":""}" data-fav="${esc(p.id)}" type="button">${fav?"❤️":"🤍"}</button>
       <div class="pImg">${img ? `<img src="${img}">` : ""}</div>
       <div class="pBody">
         <div class="pName">${esc(p.name||"—")}</div>
-        ${safeNum(p.soldCount) > 0 ? `<div style="font-size:11px;color:#aaa">${safeNum(p.soldCount)} ta sotildi</div>` : ""}
         <div class="pMeta">
           <div class="price">${fmt(finalPrice(p))}</div>
           <div class="${(disc>0||isNew(p))?"badge red":"badge"}">${esc(badge)}</div>
         </div>
+        ${safeNum(p.soldCount) > 0 ? `<div class="muted" style="font-size:11px">Sotilgan: ${safeNum(p.soldCount)}</div>` : ""}
       </div>
     </div>`;
 }
@@ -525,7 +502,7 @@ function renderHome() {
 /* ═══════════════════════════════════════
    PRODUCT DETAIL
 ═══════════════════════════════════════ */
-function openProduct(id) { state.openProductId = id; window.scrollTo(0,0); go("product"); }
+function openProduct(id) { state.openProductId = id; go("product"); }
 
 function renderProduct(id) {
   const p = state.productsMap[id];
@@ -533,146 +510,162 @@ function renderProduct(id) {
   const imgs   = (p.images || []).slice(0, 10);
   const colors = (p.colors || "").split(",").map(s => s.trim()).filter(Boolean);
   const fav    = !!state.favorites?.[id];
-  const oos    = safeNum(p.stock) <= 0;
+  const stock  = safeNum(p.stock);
+  const disc   = safeNum(p.discountPercent);
 
-  // Gallery
-  const galleryHtml = imgs.length ? `
-    <div style="position:relative;width:100%;aspect-ratio:16/9;background:#f5f5f5;border-radius:10px;overflow:hidden;margin-bottom:8px">
-      <img id="mainProdImg" src="${imgs[0]}" style="width:100%;height:100%;object-fit:contain"/>
-      ${oos ? `<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(0deg,rgba(0,0,0,.7),transparent);color:#fff;text-align:center;padding:16px 8px 6px;font-size:12px;font-weight:700">⚠ Tugagan</div>` : ""}
-    </div>
-    ${imgs.length > 1 ? `<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:6px">
-      ${imgs.map((u,i)=>`<img data-ti="${i}" src="${u}" style="width:64px;height:48px;object-fit:cover;border-radius:6px;border:2px solid ${i===0?"#e11d2e":"#ddd"};cursor:pointer;flex:0 0 auto">`).join("")}
-    </div>` : ""}` : `<div class="muted" style="text-align:center;padding:20px">Rasm yo'q</div>`;
-
-  // Installment
-  const instHtml = (p.price3m || p.price6m || p.price12m) ? `
+  /* ── Nasiya narxlari ── */
+  const p3m  = safeNum(p.price3m);
+  const p6m  = safeNum(p.price6m);
+  const p12m = safeNum(p.price12m);
+  const installHtml = (p3m > 0 || p6m > 0 || p12m > 0) ? `
     <div style="margin-top:12px">
-      <div style="font-weight:600;margin-bottom:6px">📅 Muddatli to'lov:</div>
+      <div style="font-weight:600;margin-bottom:6px">💳 Nasiya:</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        ${p.price3m  ? `<button class="instBtn" data-mo="3"  data-mn="${safeNum(p.price3m)}"  type="button">3 oy</button>`  : ""}
-        ${p.price6m  ? `<button class="instBtn" data-mo="6"  data-mn="${safeNum(p.price6m)}"  type="button">6 oy</button>`  : ""}
-        ${p.price12m ? `<button class="instBtn" data-mo="12" data-mn="${safeNum(p.price12m)}" type="button">12 oy</button>` : ""}
+        ${p3m  > 0 ? `<button class="instBtn" data-inst="3"  type="button">3 oy — ${fmt(p3m)}</button>`  : ""}
+        ${p6m  > 0 ? `<button class="instBtn" data-inst="6"  type="button">6 oy — ${fmt(p6m)}</button>`  : ""}
+        ${p12m > 0 ? `<button class="instBtn" data-inst="12" type="button">12 oy — ${fmt(p12m)}</button>` : ""}
       </div>
-      <div id="instInfoBox" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(225,29,46,.08);border-radius:8px;font-size:14px"></div>
     </div>` : "";
 
   $("productBox").innerHTML = `
-    ${galleryHtml}
-    <div class="row between" style="margin-top:6px">
+    <div class="row between">
       <div>
         <div class="h2">${esc(p.name||"—")}</div>
         <div class="muted">Kod: <b>${esc(p.code||"—")}</b></div>
-        ${safeNum(p.soldCount)>0?`<div style="font-size:12px;color:#aaa">🛒 ${safeNum(p.soldCount)} ta sotildi</div>`:""}
       </div>
       <button class="pill ${fav?"danger":""}" id="pfav" type="button">${fav?"❤️":"🤍"}</button>
     </div>
-    <div class="row between" style="margin-top:8px">
-      <div class="price" style="font-size:18px">${fmt(finalPrice(p))}</div>
-      <div class="badge ${safeNum(p.discountPercent)>0||isNew(p)?"red":""}">
-        ${safeNum(p.discountPercent)>0?`${safeNum(p.discountPercent)}% CHEGIRMA`:(isNew(p)?"NEW":"ODDIY")}
-      </div>
+    <div class="row" style="overflow:auto;margin-top:10px;gap:8px">
+      ${imgs.length ? imgs.map(u=>`<div style="width:140px;height:100px;flex:0 0 140px;border-radius:10px;overflow:hidden"><img src="${u}" style="width:100%;height:100%;object-fit:cover"></div>`).join("") : `<div class="muted">Rasm yo'q</div>`}
     </div>
-    ${instHtml}
+    <div class="row between" style="margin-top:12px">
+      <div class="price" style="font-size:18px">${fmt(finalPrice(p))}</div>
+      <div class="badge ${disc>0||isNew(p)?"red":""}">${disc>0?`${disc}% CHEGIRMA`:(isNew(p)?"NEW":"ODDIY")}</div>
+    </div>
+    <div style="margin-top:6px">
+      ${stock === 0
+        ? `<span style="color:#ef4444;font-weight:600">❌ Tugagan</span>`
+        : stock <= 5
+          ? `<span style="color:#f97316;font-weight:600">⚠️ Zaxira: ${stock} ta</span>`
+          : `<span style="color:#22c55e;font-weight:600">✅ Mavjud (${stock} ta)</span>`}
+    </div>
     ${colors.length?`<div style="margin-top:10px"><b>Ranglar:</b> ${colors.map(c=>`<span class="badge">${esc(c)}</span>`).join(" ")}</div>`:""}
-    <div style="margin-top:10px"><b>Tavsif</b></div>
+    ${installHtml}
+    <div style="margin-top:12px"><b>Tavsif</b></div>
     <div class="muted" style="margin-top:6px">${esc(p.desc||"—")}</div>
-    ${oos
-      ? `<div style="margin-top:12px;padding:10px 12px;background:#fee2e2;border-radius:8px;color:#b91c1c;font-weight:600">⚠ Hozircha mavjud emas — tez orada keladi</div>`
-      : `<div class="row" style="margin-top:12px">
-          <button class="btn primary" id="buyNow" type="button">Buyurtma</button>
-          <button class="pill" id="addCartBtn" type="button">🛒 Savatga</button>
-        </div>`}`;
+    ${safeNum(p.soldCount)>0?`<div class="muted" style="margin-top:6px;font-size:13px">📦 Sotilgan: <b>${safeNum(p.soldCount)}</b> ta</div>`:""}
+    <div class="row" style="margin-top:14px">
+      <button class="btn primary" id="buyNow" type="button" ${stock===0?"disabled":""}>Buyurtma</button>
+      <button class="pill" id="addCartBtn" type="button" ${stock===0?"disabled":""}>🛒 Savatga</button>
+    </div>`;
 
-  $("pfav").onclick = () => toggleFav(id);
-  if (!oos) {
-    $("addCartBtn").onclick = () => addToCart(id, 1);
-    $("buyNow").onclick     = () => { addToCart(id, 1); go("cart"); };
-  }
+  $("pfav").onclick       = () => toggleFav(id);
+  $("addCartBtn").onclick = () => { if (stock > 0) addToCart(id, 1); else toast("❌ Mahsulot tugagan"); };
+  $("buyNow").onclick     = () => { if (stock > 0) { addToCart(id, 1); go("cart"); } else toast("❌ Mahsulot tugagan"); };
 
-  // Thumb gallery click
-  $("productBox").querySelectorAll("[data-ti]").forEach(img => {
-    img.onclick = () => {
-      $("mainProdImg").src = img.src;
-      $("productBox").querySelectorAll("[data-ti]").forEach(t => t.style.borderColor = "#ddd");
-      img.style.borderColor = "#e11d2e";
-    };
-  });
-
-  // Installment click
   $("productBox").querySelectorAll(".instBtn").forEach(btn => {
     btn.onclick = () => {
       $("productBox").querySelectorAll(".instBtn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      const mo = safeNum(btn.dataset.mo), mn = safeNum(btn.dataset.mn);
-      const box = $("instInfoBox");
-      if (box) { box.style.display = "block"; box.innerHTML = `<b>${mo} oy × ${fmt(mn)} = ${fmt(mo*mn)}</b>`; }
+      toast(`💳 Nasiya tanlandi: ${btn.dataset.inst} oy`);
     };
   });
-
-  // Reviews
-  renderProductReviews(id);
 
   const same = state.products.filter(x => x.id!==id && x.category===p.category && x.subcategory===p.subcategory).slice(0,14);
   $("sameGrid").innerHTML = same.map(productCard).join("");
   bindProductGrid($("sameGrid"));
+
+  renderProductReviews(id);
 }
 
+/* ═══════════════════════════════════════
+   REVIEWS
+═══════════════════════════════════════ */
 async function renderProductReviews(productId) {
   const box = $("productReviews");
   if (!box) return;
+  box.innerHTML = `<div class="muted">Sharhlar yuklanmoqda...</div>`;
   try {
     const reviews = await apiGet("/reviews/" + productId);
-    if (!reviews.length) {
-      box.innerHTML = `
-        <div style="margin-top:14px;padding:16px;background:#fafafa;border-radius:14px;border:1px dashed #e5e5e5;text-align:center">
-          <div style="font-size:22px;margin-bottom:4px">💬</div>
-          <div style="font-size:13px;color:#aaa">Hali sharh yo'q</div>
-        </div>`;
-      return;
-    }
-
-    // Avatar initials helper
-    const initials = r => ((r.firstName||"?")[0] + (r.lastName||"")[0]).toUpperCase();
-    const avatarColors = ["#f97316","#e11d2e","#8b5cf6","#06b6d4","#10b981","#f59e0b"];
-    const avatarColor  = r => avatarColors[(r.firstName||"A").charCodeAt(0) % avatarColors.length];
-
+    if (!reviews.length) { box.innerHTML = `<div class="muted">Hozircha sharh yo'q</div>`; return; }
+    const avg   = (reviews.reduce((s, r) => s + safeNum(r.rating), 0) / reviews.length).toFixed(1);
+    const CLRS  = ["#6c63ff","#2dd4bf","#f97316","#ec4899","#22c55e","#3b82f6","#a78bfa"];
     box.innerHTML = `
-      <div style="margin-top:16px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-          <span style="font-weight:700;font-size:15px">💬 Sharhlar</span>
-          <span style="font-size:12px;color:#aaa;background:#f5f5f5;padding:2px 10px;border-radius:20px">${reviews.length} ta</span>
-        </div>
-        <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px;-webkit-overflow-scrolling:touch;scrollbar-width:none">
-          ${reviews.map(r => `
-            <div style="flex:0 0 240px;background:#fff;border:1px solid #f0f0f0;border-radius:16px;padding:14px;box-shadow:0 2px 8px rgba(0,0,0,.06)">
-              <!-- Header -->
-              <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
-                <div style="width:36px;height:36px;border-radius:50%;background:${avatarColor(r)};color:#fff;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center;flex-shrink:0">${initials(r)}</div>
-                <div>
-                  <div style="font-weight:600;font-size:13px;line-height:1.2">${esc(r.firstName||"")} ${esc(r.lastName||"")}</div>
-                  <div style="font-size:11px;color:#bbb">${new Date(r.createdAt).toLocaleDateString("uz-UZ")}</div>
+      <div style="font-weight:700;margin-bottom:10px">⭐ ${avg} / 5 — ${reviews.length} ta sharh</div>
+      <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:8px">
+        ${reviews.map((rv, i) => {
+          const color    = CLRS[i % CLRS.length];
+          const initials = (rv.userName || "?")[0].toUpperCase();
+          const date     = new Date(safeNum(rv.createdAt)).toLocaleDateString("uz-UZ");
+          const stars    = "⭐".repeat(Math.min(5, Math.max(1, safeNum(rv.rating))));
+          return `
+            <div style="flex:0 0 240px;width:240px;background:var(--card,#fff);border-radius:14px;padding:14px;box-shadow:0 2px 10px rgba(0,0,0,.08)">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                <div style="width:38px;height:38px;border-radius:50%;background:${color};
+                            display:flex;align-items:center;justify-content:center;
+                            color:#fff;font-weight:700;font-size:16px;flex:0 0 38px">
+                  ${esc(initials)}
                 </div>
+                <div>
+                  <div style="font-weight:600;font-size:14px">${esc(rv.userName||"Anonim")}</div>
+                  <div style="font-size:11px;color:#888">${date}</div>
+                </div>
+                <div style="margin-left:auto;font-size:13px">${stars}</div>
               </div>
-              <!-- Pros -->
-              ${r.pros ? `
-              <div style="margin-bottom:7px">
-                <div style="font-size:10px;font-weight:700;color:#15803d;letter-spacing:.5px;margin-bottom:3px;text-transform:uppercase">Afzalliklari</div>
-                <div style="font-size:12px;color:#166534;background:#f0fdf4;border-left:3px solid #22c55e;padding:6px 8px;border-radius:0 8px 8px 0;line-height:1.4">${esc(r.pros)}</div>
-              </div>` : ""}
-              <!-- Cons -->
-              ${r.cons ? `
-              <div style="margin-bottom:7px">
-                <div style="font-size:10px;font-weight:700;color:#b91c1c;letter-spacing:.5px;margin-bottom:3px;text-transform:uppercase">Kamchiliklari</div>
-                <div style="font-size:12px;color:#991b1b;background:#fff5f5;border-left:3px solid #ef4444;padding:6px 8px;border-radius:0 8px 8px 0;line-height:1.4">${esc(r.cons)}</div>
-              </div>` : ""}
-              <!-- Comment -->
-              ${r.comment ? `
-              <div style="font-size:12px;color:#555;line-height:1.5;margin-top:4px;padding-top:8px;border-top:1px solid #f0f0f0">${esc(r.comment)}</div>` : ""}
-            </div>`).join("")}
-        </div>
+              ${rv.pros    ? `<div style="color:#22c55e;font-size:12px;font-weight:600;margin-bottom:4px">✅ Afzalliklari</div><div style="font-size:13px;margin-bottom:8px">${esc(rv.pros)}</div>` : ""}
+              ${rv.cons    ? `<div style="color:#ef4444;font-size:12px;font-weight:600;margin-bottom:4px">❌ Kamchiliklari</div><div style="font-size:13px;margin-bottom:8px">${esc(rv.cons)}</div>` : ""}
+              ${rv.comment ? `<hr style="border:none;border-top:1px solid rgba(0,0,0,.08);margin:6px 0"><div style="font-size:13px;color:#555">${esc(rv.comment)}</div>` : ""}
+            </div>`;
+        }).join("")}
       </div>`;
-  } catch { box.innerHTML = ""; }
+  } catch (err) {
+    box.innerHTML = `<div class="muted">Sharhlarni yuklashda xato</div>`;
+    console.error("Reviews:", err.message);
+  }
+}
+
+function initReviewModal() {
+  $("reviewClose")?.addEventListener("click",  () => hide($("reviewModal")));
+  $("reviewModal")?.addEventListener("click",  e  => { if(e.target===$("reviewModal")) hide($("reviewModal")); });
+
+  const stars = document.querySelectorAll(".starBtn");
+  stars.forEach(s => {
+    s.addEventListener("click", () => {
+      const val = Number(s.dataset.star);
+      stars.forEach(b => b.classList.toggle("active", Number(b.dataset.star) <= val));
+      $("reviewRating").value = val;
+    });
+  });
+
+  $("reviewForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    const productId = $("reviewProductId").value;
+    const rating    = safeNum($("reviewRating").value);
+    const pros      = $("reviewPros").value.trim();
+    const cons      = $("reviewCons").value.trim();
+    const comment   = $("reviewComment").value.trim();
+    if (!rating) { toast("Reyting bering"); return; }
+    try {
+      await apiPost("/reviews", {
+        productId, userUid: state.user.uid,
+        userName: `${state.profile?.firstName||""} ${state.profile?.lastName||""}`.trim() || "Anonim",
+        rating, pros, cons, comment
+      });
+      toast("Sharh qo'shildi ✅");
+      hide($("reviewModal"));
+      renderProductReviews(productId);
+    } catch(err) { toast("❌ " + err.message); }
+  });
+}
+
+function openReviewModal(productId) {
+  $("reviewProductId").value = productId;
+  $("reviewRating").value    = 0;
+  document.querySelectorAll(".starBtn").forEach(b => b.classList.remove("active"));
+  $("reviewPros").value    = "";
+  $("reviewCons").value    = "";
+  $("reviewComment").value = "";
+  show($("reviewModal"));
 }
 
 /* ═══════════════════════════════════════
@@ -883,23 +876,26 @@ function initReceiptModal() {
     const ok = $("agree").checked && cartItems().length>0;
     $("sendOrder").disabled=!ok; $("sendOrder").classList.toggle("disabled",!ok);
   });
+
   $("openReceipt")?.addEventListener("click", ()=>{
     if (!state.profile) { toast("Profil topilmadi"); return; }
     const items = cartItems();
     if (!items.length) { toast("Savat bo'sh"); return; }
-    // Stock tekshiruv
+
+    /* ── Stock tekshiruvi ── */
     const errors = [];
-    for (const it of items) {
-      const p = state.productsMap[it.pid];
+    for (const x of items) {
+      const p = state.productsMap[x.pid];
       if (!p) continue;
-      const avail = safeNum(p.stock);
-      if (avail <= 0) {
+      const stock = safeNum(p.stock);
+      if (stock === 0) {
         errors.push(`❌ "${p.name}" — tugagan`);
-      } else if (it.qty > avail) {
-        errors.push(`⚠ "${p.name}"\nHozirda ${avail} ta bor, siz ${it.qty} ta so'radingiz.\nBuyurtmani kamaytiring yoki mahsulot kelguncha kuting.`);
+      } else if (x.qty > stock) {
+        errors.push(`⚠️ "${p.name}" — hozirda ${stock} ta bor, ${x.qty} ta so'radingiz.`);
       }
     }
-    if (errors.length) { toast(errors.join("\n\n"), 6000); return; }
+    if (errors.length) { toast(errors.join("\n"), 6000); return; }
+
     $("receiptBox").innerHTML = receiptHtml({
       orderId: null, customerId: state.profile.customerId,
       user: { firstName:state.profile.firstName, lastName:state.profile.lastName,
@@ -911,6 +907,7 @@ function initReceiptModal() {
     $("agree").checked=false; $("sendOrder").disabled=true; $("sendOrder").classList.add("disabled");
     show($("receiptModal"));
   });
+
   $("sendOrder")?.addEventListener("click", async ()=>{
     if (!$("agree").checked) return;
     const items = cartItems();
@@ -931,8 +928,7 @@ async function createOrder(items) {
       userData: { firstName:state.profile.firstName, lastName:state.profile.lastName,
                   phone:state.profile.phone, region:state.profile.region,
                   district:state.profile.district, email:state.profile.email,
-                  lat: state.profile.lat  || null,
-                  lng: state.profile.lng  || null }
+                  lat: state.profile.lat || null, lng: state.profile.lng || null }
     });
     await apiDel("/cart", { uid: state.user.uid });
     state.cart = {}; renderCart(); fetchUserOrders();
@@ -967,23 +963,27 @@ function renderOrders() {
   $("ordersList").innerHTML = list.map(o=>{
     const s=o.status||{};
     const st = s.delivered?"✅ Yetib keldi":(s.onWay?"🚚 Yo'lda":"⏳ Buyurtma berildi");
-    const rvBtns = s.delivered ? (o.items||[]).map(it=>`
-      <button class="pill" data-rv="${esc(it.productId)}" data-ro="${esc(o.orderId)}" data-rn="${esc(it.name||"")}" type="button" style="font-size:11px;margin-top:4px">⭐ ${esc(it.name||"")}</button>`).join("") : "";
     return `
       <div class="item">
-        <div style="flex:1">
+        <div>
           <div class="t1">Buyurtma • <b>${esc(o.orderId)}</b></div>
           <div class="t2">${st} • Jami: <b>${fmt(o.total||0)}</b></div>
-          ${rvBtns ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">${rvBtns}</div>` : ""}
         </div>
-        <button class="pill" data-oview="${esc(o.orderId)}" type="button">👁</button>
+        <div class="row" style="gap:6px">
+          <button class="pill" data-oview="${esc(o.orderId)}" type="button">👁</button>
+          ${s.delivered ? `<button class="pill" data-review-order="${esc(o.orderId)}" type="button">⭐</button>` : ""}
+        </div>
       </div>`;
   }).join("");
   $("ordersList").querySelectorAll("[data-oview]").forEach(b=>{
     b.onclick=()=>{ const o=state.userOrders.find(x=>x.orderId===b.dataset.oview); if(o) openOrderView(o); };
   });
-  $("ordersList").querySelectorAll("[data-rv]").forEach(b=>{
-    b.onclick=()=>openReviewModal(b.dataset.rv, b.dataset.ro, b.dataset.rn);
+  $("ordersList").querySelectorAll("[data-review-order]").forEach(b=>{
+    b.onclick=()=>{
+      const o = state.userOrders.find(x=>x.orderId===b.dataset.reviewOrder);
+      if (o?.items?.[0]?.productId) openReviewModal(o.items[0].productId);
+      else toast("Mahsulot topilmadi");
+    };
   });
   if (!list.length) show($("ordersEmpty")); else hide($("ordersEmpty"));
 }
@@ -1119,6 +1119,7 @@ function buildProductPayload() {
     newUntil:type==="new"?(nowMs()+newDays*86400000):0,
     category:$("pCat").value, subcategory:$("pSub").value,
     colors:$("pColors").value.trim(), desc:$("pDesc").value.trim(), images:readImages(),
+    stock: safeNum($("pStock")?.value || 0),
   };
 }
 function resetAdminForm() {
@@ -1132,6 +1133,7 @@ function renderAdminList() {
   const list=state.products.filter(p=>!q||(p.name||"").toLowerCase().includes(q)||(p.code||"").toLowerCase().includes(q));
   $("adminProducts").innerHTML=list.map(p=>{
     const img=p.images?.[0]||"", disc=safeNum(p.discountPercent);
+    const stock=safeNum(p.stock), sold=safeNum(p.soldCount);
     return `
       <div class="item">
         <div class="left">
@@ -1139,22 +1141,28 @@ function renderAdminList() {
           <div>
             <div class="t1">${esc(p.name||"—")}</div>
             <div class="t2">Kod: <b>${esc(p.code||"—")}</b> • ${fmt(finalPrice(p))}</div>
-            <div class="t2">${esc(p.category||"")} → ${esc(p.subcategory||"")} ${isNew(p)?"• NEW":""} ${disc>0?`• ${disc}%`:""}</div>
+            <div class="t2">${esc(p.category||"")} → ${esc(p.subcategory||"")}${isNew(p)?" • NEW":""}${disc>0?` • ${disc}%`:""}</div>
+            <div class="t2">📦 Qoldi: <b>${stock}</b> ta &nbsp; Sotildi: <b>${sold}</b> ta</div>
           </div>
         </div>
-        <div class="row">
-          <button class="pill" data-edit="${esc(p.id)}" type="button">✏️</button>
-          <button class="pill danger" data-del="${esc(p.id)}" type="button">🗑</button>
+        <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+          <div class="row" style="gap:4px">
+            <button class="pill" data-edit="${esc(p.id)}" type="button">✏️</button>
+            <button class="pill danger" data-del="${esc(p.id)}" type="button">🗑</button>
+          </div>
+          <button class="pill" data-restock="${esc(p.id)}" type="button" style="font-size:11px">📦 Zaxira</button>
         </div>
       </div>`;
   }).join("")||`<div class="empty">Mahsulot yo'q</div>`;
   $("adminProducts").querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>startEdit(b.dataset.edit));
   $("adminProducts").querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>deleteProduct(b.dataset.del));
+  $("adminProducts").querySelectorAll("[data-restock]").forEach(b=>b.onclick=()=>restockProduct(b.dataset.restock));
 }
 function startEdit(id) {
   const p=state.productsMap[id]; if(!p) return;
   $("editId").value=id; $("adminHint").textContent="Tahrirlash: "+(p.name||""); show($("cancelEdit"));
   $("pName").value=p.name||""; $("pCode").value=p.code||""; $("pPrice").value=safeNum(p.price);
+  if ($("pStock")) $("pStock").value = safeNum(p.stock);
   const type=safeNum(p.discountPercent)>0?"discount":(isNew(p)?"new":"normal");
   $("pType").value=type; $("pDiscount").value=safeNum(p.discountPercent);
   if(type==="new"){ show($("newBox")); $("pNewDays").value=Math.max(1,Math.ceil(Math.max(0,safeNum(p.newUntil)-nowMs())/86400000)); }
@@ -1168,6 +1176,18 @@ async function deleteProduct(id) {
   if(!confirm("O'chirasizmi?")) return;
   try { await apiDel("/products/"+id); await fetchProducts(); toast("O'chirildi ✅"); }
   catch(err) { toast("❌ "+err.message); }
+}
+async function restockProduct(id) {
+  const p = state.productsMap[id]; if(!p) return;
+  const val = prompt(`"${p.name}" uchun yangi zaxira:\n(Hozir: ${safeNum(p.stock)} ta)`);
+  if (val === null) return;
+  const qty = parseInt(val, 10);
+  if (isNaN(qty) || qty < 0) { toast("❌ To'g'ri son kiriting"); return; }
+  try {
+    await apiPut("/products/"+id+"/restock", { stock: qty });
+    await fetchProducts();
+    toast(`📦 Zaxira yangilandi: ${qty} ta ✅`);
+  } catch(err) { toast("❌ "+err.message); }
 }
 function renderAdsPicker() {
   if(state.view!=="admin"||state.adminTab!=="ads"||!$("adsPick")) return;
@@ -1227,7 +1247,7 @@ function renderAdminOrders() {
           <div class="t2"><b>Jami:</b> ${fmt(o.total||0)}</div>
           <div class="t2">${onWay?"✅ Yo'lda":"⏳ Kutilmoqda"}</div>
         </div>
-        <div class="row" style="flex-direction:column">
+        <div style="display:flex;flex-direction:column;gap:4px">
           <button class="pill" data-view="${esc(o.orderId)}" type="button">👁 Chek</button>
           <button class="pill ${onWay?"danger":""}" data-tick="${esc(o.orderId)}" type="button">${onWay?"Yo'lda ✅":"Tick ✅"}</button>
         </div>
@@ -1262,7 +1282,7 @@ function renderDriverOrders() {
           <div class="t2">${esc((u.region||"")+", "+(u.district||""))} • ${esc(u.phone||"")}</div>
           <div class="t2"><b>Jami:</b> ${fmt(o.total||0)}</div>
         </div>
-        <div class="row" style="flex-direction:column">
+        <div style="display:flex;flex-direction:column;gap:4px">
           <button class="pill" data-view="${esc(o.orderId)}" type="button">👁 Chek</button>
           <button class="pill danger" data-done="${esc(o.orderId)}" type="button">🚚✅ Keldi</button>
         </div>
@@ -1295,59 +1315,28 @@ function initFilters() {
 }
 
 /* ═══════════════════════════════════════
-   AUTO GPS — Mijoz kirganida avtomatik
-   Hech qanday tugma bosilmaydi, foydalanuvchi
-   bildirmasdan joylashuv olinadi va backendga yuboriladi
+   AUTO GPS
 ═══════════════════════════════════════ */
 let _gpsWatchId = null;
 
 function startAutoGPS() {
-  // GPS faqat HTTPS yoki localhost da ishlaydi
-  if (!navigator.geolocation) {
-    console.warn("GPS: navigator.geolocation yo'q");
-    return;
-  }
-  if (_gpsWatchId) return; // allaqachon ishlamoqda
-
-  const onSuccess = pos => {
-    sendLocation(pos.coords.latitude, pos.coords.longitude);
-  };
-
-  const onError = err => {
-    // Xatoni console ga yozamiz lekin foydalanuvchiga ko'rsatmaymiz
-    console.warn("GPS xato:", err.code, err.message);
-    // Ruxsat berilmagan bo'lsa indikatorni o'chiramiz
-    if (err.code === 1) updateGPSIndicator(false);
-  };
-
-  const opts = { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 };
-
-  // Bir marta tez olamiz
-  navigator.geolocation.getCurrentPosition(onSuccess, onError, opts);
-
-  // Har o'zganda yangilaymiz
-  _gpsWatchId = navigator.geolocation.watchPosition(onSuccess, onError, {
-    enableHighAccuracy: false,
-    maximumAge: 60000,
-    timeout: 20000
-  });
+  if (!navigator.geolocation) { console.warn("GPS yo'q"); return; }
+  if (_gpsWatchId) return;
+  const onSuccess = pos => sendLocation(pos.coords.latitude, pos.coords.longitude);
+  const onError   = err => { console.warn("GPS xato:", err.code, err.message); if(err.code===1) updateGPSIndicator(false); };
+  navigator.geolocation.getCurrentPosition(onSuccess, onError, { enableHighAccuracy:false, timeout:10000, maximumAge:60000 });
+  _gpsWatchId = navigator.geolocation.watchPosition(onSuccess, onError, { enableHighAccuracy:false, maximumAge:60000, timeout:20000 });
 }
 
 function stopAutoGPS() {
-  if (_gpsWatchId) {
-    navigator.geolocation.clearWatch(_gpsWatchId);
-    _gpsWatchId = null;
-  }
+  if (_gpsWatchId) { navigator.geolocation.clearWatch(_gpsWatchId); _gpsWatchId = null; }
   updateGPSIndicator(false);
 }
 
 async function sendLocation(lat, lng) {
   if (!state.user) return;
-  // apiPut ishlatmaymiz — xato bo'lsa GPS to'xtab qolmasin
-  // To'g'ridan-to'g'ri fetch, muvaffaqiyatsiz bo'lsa ham GPS ishlayversin
   fetch(API + "/users/" + state.user.uid + "/location", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    method: "PUT", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lat, lng })
   }).catch(() => {});
   if (state.profile) { state.profile.lat = lat; state.profile.lng = lng; }
@@ -1355,61 +1344,15 @@ async function sendLocation(lat, lng) {
 }
 
 function updateGPSIndicator(active, lat, lng) {
-  const dot = $("gpsIndicatorDot");
-  const lbl = $("gpsIndicatorLbl");
+  const dot = $("gpsIndicatorDot"), lbl = $("gpsIndicatorLbl");
   if (!dot) return;
   if (active) {
-    dot.classList.add("active");
-    dot.classList.remove("error");
-    if (lbl) {
-      lbl.textContent = lat && lng
-        ? `${lat.toFixed(3)}, ${lng.toFixed(3)}`
-        : "📍 Faol";
-    }
+    dot.classList.add("active"); dot.classList.remove("error");
+    if (lbl) lbl.textContent = lat && lng ? `${lat.toFixed(3)}, ${lng.toFixed(3)}` : "📍 Faol";
   } else {
-    dot.classList.remove("active");
-    dot.classList.add("error");
+    dot.classList.remove("active"); dot.classList.add("error");
     if (lbl) lbl.textContent = "GPS yo'q";
   }
-}
-
-/* ═══════════════════════════════════════
-   REVIEWS MODAL
-═══════════════════════════════════════ */
-function openReviewModal(productId, orderId, productName) {
-  if (!$("reviewModal")) return;
-  $("reviewProductId").value = productId;
-  $("reviewOrderId").value   = orderId;
-  $("reviewProductName").textContent = productName || "";
-  $("reviewPros").value = $("reviewCons").value = $("reviewComment").value = "";
-  hide($("reviewMsg"));
-  show($("reviewModal"));
-}
-
-function initReviewModal() {
-  $("reviewClose")?.addEventListener("click", ()=>hide($("reviewModal")));
-  $("reviewModal")?.addEventListener("click", e=>{ if(e.target===$("reviewModal")) hide($("reviewModal")); });
-  $("submitReview")?.addEventListener("click", async ()=>{
-    if (!state.user || !state.profile) return;
-    const pros = ($("reviewPros").value||"").trim();
-    const cons = ($("reviewCons").value||"").trim();
-    const comment = ($("reviewComment").value||"").trim();
-    if (!pros && !cons && !comment) { setMsg($("reviewMsg"), "Kamida bitta maydon to'ldiring"); return; }
-    $("submitReview").disabled = true;
-    try {
-      await apiPost("/reviews", {
-        productId: $("reviewProductId").value,
-        orderId:   $("reviewOrderId").value,
-        userUid:   state.user.uid,
-        firstName: state.profile.firstName || "",
-        lastName:  state.profile.lastName  || "",
-        pros, cons, comment
-      });
-      toast("Sharhingiz qabul qilindi ✅");
-      hide($("reviewModal"));
-    } catch(err) { setMsg($("reviewMsg"), err?.message||"Xato"); }
-    finally { $("submitReview").disabled = false; }
-  });
 }
 
 /* ═══════════════════════════════════════
@@ -1435,14 +1378,14 @@ function start() {
       }
       await Promise.all([fetchProducts(), fetchFavorites(), fetchCart(), fetchAds()]);
       await fetchUserOrders();
-      // Har 20 sekundda barcha sahifalar uchun yangilanish
-      startPoll("products",   fetchProducts,   20000);
-      startPoll("favorites",  fetchFavorites,  20000);
+      startPoll("products",   fetchProducts,   30000);
+      startPoll("favorites",  fetchFavorites,  30000);
       startPoll("cart",       fetchCart,       20000);
-      startPoll("ads",        fetchAds,        20000);
+      startPoll("ads",        fetchAds,        60000);
       startPoll("userOrders", fetchUserOrders, 20000);
       initSocket(user);
       startAutoGPS();
+      requestNotifPermission();
       go("home");
     } else {
       stopAutoGPS();
@@ -1452,8 +1395,4 @@ function start() {
   });
 }
 
-
 document.addEventListener("DOMContentLoaded", start);
-
-
-
